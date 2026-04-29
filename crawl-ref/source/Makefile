@@ -1353,6 +1353,7 @@ endif
 
 GAME_OBJS=$(OBJECTS) main.o $(EXTRA_OBJECTS)
 MONSTER_OBJS=$(OBJECTS) util/monster/monster-main.o $(EXTRA_OBJECTS)
+WIKI_OBJS=$(OBJECTS) util/wiki/wiki-main.o $(EXTRA_OBJECTS)
 CATCH2_TEST_OBJECTS = $(OBJECTS) $(TEST_OBJECTS) catch2-tests/catch_amalgamated.o catch2-tests/test_main.o $(EXTRA_OBJECTS)
 
 
@@ -1701,6 +1702,11 @@ install-monster: monster
 	if [ -f ~/source/announcements.log ]; then \
 	  echo 'Monster database of master branch on crawl.develz.org updated to: $(VERSION)' >>~/source/announcements.log;\
 	fi
+
+util/wiki/wiki: $(WIKI_OBJS) $(CONTRIB_LIBS) dat/dlua/tags.lua
+	+$(QUIET_LINK)$(CXX) $(LDFLAGS) $(WIKI_OBJS) -o $@ $(LIBS)
+
+wiki: util/wiki/wiki
 
 catch2-tests-executable: $(CATCH2_TEST_OBJECTS) $(CONTRIB_LIBS) dat/dlua/tags.lua
 	+$(QUIET_LINK)$(CXX) $(LDFLAGS) $(CATCH2_TEST_OBJECTS) -o catch2-tests-executable $(LIBS)
