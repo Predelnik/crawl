@@ -23,7 +23,9 @@
 #include "artefact.h"
 #include <sstream>
 #include <set>
+#if defined(UNIX) || defined(TARGET_COMPILER_MINGW)
 #include <unistd.h>
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // main.cc stuff
