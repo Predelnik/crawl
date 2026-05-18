@@ -23,8 +23,10 @@
 #include "mon-death.h"
 #include "mon-explode.h" // ball_lightning_damage
 #include "mon-project.h"
+#include "spl-book.h"
 #include "spl-damage.h"
 #include "spl-summoning.h" // mons_ball_lighting_hd
+#include "spl-util.h"
 #include "spl-zap.h"
 #include "syscalls.h"
 #include "tag-version.h"
@@ -188,6 +190,7 @@ static void initialize_crawl()
     you.hp = you.hp_max = PLAYER_MAXHP;
     you.magic_points = you.max_magic_points = PLAYER_MAXMP;
     you.species = SP_HUMAN;
+    you.current_vision = you.normal_vision = LOS_RADIUS; // Workaround for spells to give 8 as range
 }
 
 static string dice_def_string(dice_def dice)
@@ -350,7 +353,7 @@ static string mons_human_readable_spell_damage_string(monster* monster,
   return "";
 }
 
-static string _get_spell_flags_description(mon_spell_slot_flags flags)
+static string _get_monster_spell_flags_description(mon_spell_slot_flags flags)
 {
     vector<string> str_flags;
 
@@ -458,11 +461,6 @@ static void _add_quoted_item(std::string& target, std::string new_item)
   }
   target += '"' + new_item + '"';
 }
-
-enum class info_type_t
-{
-  monsters,
-};
 
 // similar to mon_attack_name_short
 static const char* _get_mon_attack_type_description(attack_type type)
@@ -678,7 +676,7 @@ static void _print_attack_info(monster& mon)
   printf("%s", monsterattacks.c_str());
 }
 
-static void _print_spell(monster& mp, spell_type spell, mon_spell_slot_flags flags, std::string override_damage = "", spell_type override_spell_type = SPELL_NO_SPELL)
+static void _print_monster_spell(monster& mp, spell_type spell, mon_spell_slot_flags flags, std::string override_damage = "", spell_type override_spell_type = SPELL_NO_SPELL)
 {
   spell_type sp = override_spell_type != SPELL_NO_SPELL ? override_spell_type : spell;
   printf(R"(      -
@@ -693,11 +691,11 @@ static void _print_spell(monster& mp, spell_type spell, mon_spell_slot_flags fla
   }
   printf(R"(        Flags: %s
 )",
-  _get_spell_flags_description(flags).c_str()
+  _get_monster_spell_flags_description(flags).c_str()
 );
 }
 
-static void _print_spellsets(monster& mp, const std::set<std::vector<std::pair<spell_type, uint32_t>>>& spell_sets, const std::multimap<spell_type, std::string>& overriden_damages)
+static void _print_monster_spellsets(monster& mp, const std::set<std::vector<std::pair<spell_type, uint32_t>>>& spell_sets, const std::multimap<spell_type, std::string>& overriden_damages)
 {
   if (spell_sets.empty()) {
     return;
@@ -722,7 +720,7 @@ static void _print_spellsets(monster& mp, const std::set<std::vector<std::pair<s
         {
           for (auto breath : *breaths)
           {
-            _print_spell(mp, sp, flags, "", breath);
+            _print_monster_spell(mp, sp, flags, "", breath);
           }
         }
         continue;
@@ -741,7 +739,7 @@ static void _print_spellsets(monster& mp, const std::set<std::vector<std::pair<s
           overriden_damage += it->second;
         }
       }
-      _print_spell(mp, sp, flags, overriden_damage);
+      _print_monster_spell(mp, sp, flags, overriden_damage);
     }
   }
 }
@@ -1029,7 +1027,7 @@ static void _print_resistances_and_vulnerabilities(resists_t res, monster& mon)
 
 // roughly, parts from get_monster_db_desc
 // draconian descriptions are not supported due to _describe_draconian being static
-static void _get_description_and_quote(const monster_info& mi, std::string &description, std::string &quote)
+static void _get_monster_description_and_quote(const monster_info& mi, std::string &description, std::string &quote)
 {
   string db_name;
 
@@ -1079,6 +1077,21 @@ static void _get_description_and_quote(const monster_info& mi, std::string &desc
   }
 }
 
+static std::string _escape_characters(std::string str)
+{
+  str = replace_all(str, "\n", "\\n");
+  str = replace_all(str, "\"", "\\\"");
+  return str;
+}
+
+// postprocess string for descriptions and quotes
+// trim whitespaces and escape characters
+static std::string _postprocess_txt_str(std::string str)
+{
+  trim_string(str);
+  return _escape_characters(str);
+}
+
 static void _print_mon_description_and_quote(const monster_info& mi)
 {
   if (mi.type == MONS_PLAYER_ILLUSION || mi.type == MONS_PLAYER_GHOST)
@@ -1086,19 +1099,15 @@ static void _print_mon_description_and_quote(const monster_info& mi)
     return;
   }
   std::string description, quote;
-  _get_description_and_quote(mi, description, quote);
-  trim_string(description);
-  trim_string(quote);
+  _get_monster_description_and_quote(mi, description, quote);
   if (!description.empty()) {
-    description = replace_all(description, "\n", "\\n");
-    description = replace_all(description, "\"", "\\\"");
+    _postprocess_txt_str(description);
     printf(R"(  Description: "%s"
 )", description.c_str());
   }
   if (!quote.empty())
   {
-    quote = replace_all(quote, "\n", "\\n");
-    quote = replace_all(quote, "\"", "\\\"");
+    _postprocess_txt_str(quote);
     printf(R"(  Quote: "%s"
 )", quote.c_str());
   }
@@ -1300,7 +1309,7 @@ static void _print_data_for_monster(monster_type spec_type)
   _get_habitat_description(me->habitat).c_str()
   );
 
-  _print_spellsets(mon, spell_sets, overriden_damages);
+  _print_monster_spellsets(mon, spell_sets, overriden_damages);
   printf(R"(  Flags: [%s]
   Willpower: "%s"
 )",
@@ -1330,6 +1339,267 @@ static void _print_data_for_monster(monster_type spec_type)
   _reset_monster(&mon);
 }
 
+static void _print_monsters()
+{
+  auto saved_generators = rng::generators_to_vector();
+
+  for (int i = 0; i < NUM_MONSTERS; ++i)
+  {
+    rng::load_generators(saved_generators); // restore rng to have the same results as monster utility
+    const auto spec_type = static_cast<monster_type>(i);
+    auto entry = get_monster_data(spec_type);
+    if (entry->bitfields & M_CANT_SPAWN) {
+      continue;
+    }
+    _print_data_for_monster(spec_type);
+  }
+}
+
+static void _print_description_and_quote(const std::string& db_name)
+{
+  auto description = getLongDescription(db_name);
+  description = _postprocess_txt_str(description);
+  if (!description.empty())
+  {
+    printf(R"(  description: "%s"
+)", description.c_str());
+  }
+
+  auto quote = getQuoteString(db_name);
+  quote = _postprocess_txt_str(quote);
+  if (!quote.empty())
+  {
+    printf(R"(  quote: "%s"
+)", quote.c_str());
+  }
+}
+
+static void _print_spell_description_and_quote(const std::string& spell_name)
+{
+  _print_description_and_quote(spell_name + " spell");
+}
+
+static const char* _get_spell_flag_description(spflag flag)
+{
+  switch (flag)
+  {
+  case spflag::none:
+    break;
+  case spflag::dir_or_target:
+    return "dir_or_target";
+  case spflag::target:
+    return "target";
+  case spflag::prefer_farthest:
+    return "prefer_farthest";
+  case spflag::targeting_mask:
+    return "targeting_mask";
+  case spflag::obj:
+    return "obj";
+  case spflag::helpful:
+    return "helpful";
+  case spflag::aim_at_space:
+    return "aim_at_space";
+  case spflag::not_self:
+    return "not_self";
+  case spflag::unholy:
+    return "unholy";
+  case spflag::unclean:
+    return "unclean";
+  case spflag::chaotic:
+    return "chaotic";
+  case spflag::hasty:
+    return "hasty";
+  case spflag::silent:
+    return "silent";
+  case spflag::escape:
+    return "escape";
+  case spflag::recovery:
+    return "recovery";
+  case spflag::destructive:
+    return "destructive";
+  case spflag::selfench:
+    return "selfench";
+  case spflag::monster:
+    return "monster";
+  case spflag::needs_tracer:
+    return "needs_tracer";
+  case spflag::noisy:
+    return "noisy";
+  case spflag::testing:
+    return "testing";
+  case spflag::no_ghost:
+    return "no_ghost";
+  case spflag::cloud:
+    return "cloud";
+  case spflag::WL_check:
+    return "WL_check";
+  case spflag::mons_abjure:
+    return "mons_abjure";
+  case spflag::dummy:
+    return "dummy";
+  case spflag::holy:
+    return "holy";
+  }
+  return "";
+}
+
+static void _print_spell_flags(spell_type spell)
+{
+  const spell_flags flags = get_spell_flags(spell);
+  using underlying_type = std::underlying_type<spflag>::type;
+  printf("  flags:\n");
+  for (underlying_type i = 1; i <= std::numeric_limits<underlying_type>::max() / 2; i <<= 1)
+  {
+    const auto flag = static_cast<spflag>(i);
+    if (flags & flag)
+    {
+      printf("    %s: true\n", _get_spell_flag_description(flag));
+    }
+  }
+}
+
+static void _print_spell_schools(spell_type spell)
+{
+  printf("  schools:\n");
+  for (const auto school : spschools_type::range())
+  {
+    if (spell_typematch(spell, school))
+    {
+      printf(R"(    "%s": true
+)", spelltype_long_name(school));
+    }
+  }
+}
+
+static void _print_spell_range(spell_type spell)
+{
+  const auto min_range = spell_range(spell, &you, 0);
+  const auto cap = spell_power_cap(spell);
+  const auto max_range = spell_range(spell, &you, cap);
+  if (min_range == -1 || max_range == -1)
+  {
+    return;
+  }
+  printf(R"(  range:
+    min: %d
+    max: %d
+)", min_range, max_range);
+}
+
+static void _print_spell_noise(spell_type spell)
+{
+  // from spell_noise_string in spl-cast.cc
+  int effect_noise = spell_effect_noise(spell);
+  if (spell == SPELL_POLAR_VORTEX)
+    effect_noise = 15;
+
+  printf(R"(  noise:
+    casting: %d
+    effect: %d
+)", spell_noise(spell), effect_noise);
+}
+
+static string _get_book_name(book_type book)
+{
+  item_def item;
+  item.base_type = OBJ_BOOKS;
+  item.sub_type = book;
+  return item.name(DESC_PLAIN, false, true);
+}
+
+static void _print_spell_books(spell_type spell)
+{
+  bool first = true;
+  for (int i = 0; i < NUM_BOOKS; ++i)
+  {
+    auto book = static_cast<book_type>(i);
+    if (!book_exists(book))
+      continue;
+    for (spell_type book_spell : spellbook_template(book))
+    {
+      if (spell == book_spell)
+      {
+        if (first)
+        {
+          printf("  books:\n");
+          first = false;
+        }
+        printf(R"(    "%s": true
+)", _get_book_name(book).c_str());
+      }
+    }
+  }
+}
+
+static void _print_spell(spell_type spell)
+{
+  const std::string name = spell_title(spell);
+  printf(R"("%s":
+  name: "%s"
+  level: %d
+  "power cap": %d
+)", name.c_str(),
+  name.c_str(),
+  spell_difficulty(spell),
+  spell_power_cap(spell));
+  _print_spell_range(spell);
+  _print_spell_noise(spell);
+  _print_spell_schools(spell);
+  _print_spell_flags(spell);
+  _print_spell_description_and_quote(name);
+  _print_spell_books(spell);
+}
+
+static void _print_spells()
+{
+  _print_spell(SPELL_LEHUDIBS_CRYSTAL_SPEAR);
+  for (int i = SPELL_NO_SPELL + 1; i < NUM_SPELLS; ++i)
+  {
+    const spell_type spell = static_cast<spell_type>(i);
+    if (!is_valid_spell(spell) || !is_player_book_spell(spell))
+      continue;
+
+    _print_spell(spell);
+  }
+}
+
+static void _print_book_spells(book_type book)
+{
+  printf("  spells:\n");
+  for (const spell_type spell : spellbook_template(book))
+  {
+    printf(R"(    - "%s"
+)", spell_title(spell));
+  }
+}
+
+static void _print_book(book_type book)
+{
+  item_def item;
+  item.base_type = OBJ_BOOKS;
+  item.sub_type = book;
+  item.quantity = 1;
+  const auto name = _get_book_name(book);
+  printf(R"("%s":
+  name: "%s"
+  value: %u
+)",
+    name.c_str(), name.c_str(), item_value(item, true));
+  _print_book_spells(book);
+  _print_description_and_quote(name);
+}
+
+static void _print_spellbooks()
+{
+  for (int i = 0; i < NUM_BOOKS; ++i)
+  {
+    auto book = static_cast<book_type>(i);
+    if (!book_exists(book))
+      continue;
+    _print_book(book);
+  }
+}
+
 int main(int argc, char* argv[])
 {
     crawl_state.test = true;
@@ -1349,33 +1619,22 @@ int main(int argc, char* argv[])
     initialize_crawl();
 
     string action = argv[1];
-    info_type_t info_type;
     if (action == "monsters")
     {
-      info_type = info_type_t::monsters;
+      _print_monsters();
+    }
+    else if (action == "spells")
+    {
+      _print_spells();
+    }
+    else if (action == "spellbooks")
+    {
+      _print_spellbooks();
     }
     else
     {
       fprintf(stderr, "Unsupported info type, currently supported: monsters");
       return 1;
-    }
-    if (info_type != info_type_t::monsters)
-    {
-      // for now only monsters supported
-      return 1;
-    }
-
-    auto saved_generators = rng::generators_to_vector();
-
-    for (int i = 0; i < NUM_MONSTERS; ++i)
-    {
-      rng::load_generators(saved_generators); // restore rng to have the same results as monster utility
-      const auto spec_type = static_cast<monster_type>(i);
-      auto entry = get_monster_data(spec_type);
-      if (entry->bitfields & M_CANT_SPAWN) {
-        continue;
-      }
-      _print_data_for_monster(spec_type);
     }
     return 0;
 }
