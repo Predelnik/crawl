@@ -1552,7 +1552,6 @@ static void _print_spell(spell_type spell)
 
 static void _print_spells()
 {
-  _print_spell(SPELL_LEHUDIBS_CRYSTAL_SPEAR);
   for (int i = SPELL_NO_SPELL + 1; i < NUM_SPELLS; ++i)
   {
     const spell_type spell = static_cast<spell_type>(i);
