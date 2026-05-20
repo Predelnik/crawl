@@ -1593,7 +1593,7 @@ static void _print_spellbooks()
   for (int i = 0; i < NUM_BOOKS; ++i)
   {
     auto book = static_cast<book_type>(i);
-    if (!book_exists(book))
+    if (!book_exists(book) || spellbook_template(book).empty())
       continue;
     _print_book(book);
   }
