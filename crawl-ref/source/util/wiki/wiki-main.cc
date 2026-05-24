@@ -30,6 +30,7 @@
 #include "spl-zap.h"
 #include "syscalls.h"
 #include "tag-version.h"
+#include "tiledef-gui.h"
 #include "version.h"
 
 #ifdef _MSC_VER
@@ -1531,7 +1532,7 @@ static void _print_spell_books(spell_type spell)
   }
 }
 
-static void _print_spell(spell_type spell)
+static void _print_player_spell(spell_type spell)
 {
   const std::string name = spell_title(spell);
   printf(R"("%s":
@@ -1550,7 +1551,23 @@ static void _print_spell(spell_type spell)
   _print_spell_books(spell);
 }
 
-static void _print_spells()
+static void _print_monster_spell(spell_type spell)
+{
+  const std::string name = spell_title(spell);
+  printf(R"("%s":
+  name: "%s"
+  level: %d
+)", name.c_str(),
+  name.c_str(),
+  spell_difficulty(spell));
+  _print_spell_range(spell);
+  _print_spell_noise(spell);
+  _print_spell_schools(spell);
+  _print_spell_flags(spell);
+  _print_spell_description_and_quote(name);
+}
+
+static void _print_player_spells()
 {
   for (int i = SPELL_NO_SPELL + 1; i < NUM_SPELLS; ++i)
   {
@@ -1558,7 +1575,19 @@ static void _print_spells()
     if (!is_valid_spell(spell) || !is_player_book_spell(spell))
       continue;
 
-    _print_spell(spell);
+    _print_monster_spell(spell);
+  }
+}
+
+static void _print_monster_spells()
+{
+  for (int i = SPELL_NO_SPELL + 1; i < NUM_SPELLS; ++i)
+  {
+    const spell_type spell = static_cast<spell_type>(i);
+    if (!is_valid_spell(spell) || !(get_spell_flags(spell) & spflag::monster))
+      continue;
+
+    _print_monster_spell(spell);
   }
 }
 
@@ -1604,7 +1633,7 @@ int main(int argc, char* argv[])
     crawl_state.test = true;
     if (argc < 2 || argc > 3)
     {
-        fprintf(stderr, "Usage: wiki <info type> <optional: path to crawl dir>\n");
+        fprintf(stderr, "Usage: wiki <info type (monsters, spells, spellbooks, monster_spells)> <optional: path to crawl dir>\n");
         return 1;
     }
 
@@ -1624,7 +1653,11 @@ int main(int argc, char* argv[])
     }
     else if (action == "spells")
     {
-      _print_spells();
+      _print_player_spells();
+    }
+    else if (action == "monster_spells")
+    {
+      _print_monster_spells();
     }
     else if (action == "spellbooks")
     {
