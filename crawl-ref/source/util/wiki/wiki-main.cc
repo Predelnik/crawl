@@ -1575,7 +1575,7 @@ static void _print_player_spells()
     if (!is_valid_spell(spell) || !is_player_book_spell(spell))
       continue;
 
-    _print_monster_spell(spell);
+    _print_player_spell(spell);
   }
 }
 
@@ -1587,6 +1587,11 @@ static void _print_monster_spells()
     if (!is_valid_spell(spell) || !(get_spell_flags(spell) & spflag::monster))
       continue;
 
+    _print_monster_spell(spell);
+  }
+  // additional spells which do not have spflag::monster:
+  for (auto spell : { SPELL_HURL_DAMNATION })
+  {
     _print_monster_spell(spell);
   }
 }
