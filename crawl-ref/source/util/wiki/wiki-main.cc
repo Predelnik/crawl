@@ -10,6 +10,7 @@
 
 #include "coordit.h"
 #include "database.h"
+#include "describe-spells.h"
 #include "describe.h" // get_item_description
 #include "fight.h" // spines_damage
 #include "files.h"
@@ -192,6 +193,7 @@ static void initialize_crawl()
     you.magic_points = you.max_magic_points = PLAYER_MAXMP;
     you.species = SP_HUMAN;
     you.current_vision = you.normal_vision = LOS_RADIUS; // Workaround for spells to give 8 as range
+    shopping_list.refresh();
 }
 
 static string dice_def_string(dice_def dice)
@@ -290,7 +292,7 @@ static string mi_calc_resonance_strike_damage(monster* mons)
 /**
  * @return e.g.: "2d6", "5-12".
  */
-static string mons_human_readable_spell_damage_string(monster* monster,
+static string _mons_get_damage_string_fallback(monster* monster,
   spell_type sp)
 {
   const int pow = mons_power_for_hd(sp, monster->spell_hd(sp));
@@ -352,6 +354,23 @@ static string mons_human_readable_spell_damage_string(monster* monster,
   if (spell_beam.damage.size && spell_beam.damage.num)
     return dice_def_string(spell_beam.damage);
   return "";
+}
+
+static string _mons_get_damage_string(const monster_info& mi, monster& mon,
+  spell_type sp)
+{
+  auto effect_string = spell_effect_string(sp, &mi);
+  if (effect_string.empty())
+  {
+    return _mons_get_damage_string_fallback(&mon, sp);
+  }
+
+  if (effect_string.front() == '(' && effect_string.back() == ')')
+  {
+    effect_string.erase(effect_string.begin());
+    effect_string.pop_back();
+  }
+  return effect_string;
 }
 
 static string _get_monster_spell_flags_description(mon_spell_slot_flags flags)
@@ -677,7 +696,7 @@ static void _print_attack_info(monster& mon)
   printf("%s", monsterattacks.c_str());
 }
 
-static void _print_monster_spell(monster& mp, spell_type spell, mon_spell_slot_flags flags, std::string override_damage = "", spell_type override_spell_type = SPELL_NO_SPELL)
+static void _print_monster_spell(const monster_info& mi, monster& mon, spell_type spell, mon_spell_slot_flags flags, std::string override_damage = "", spell_type override_spell_type = SPELL_NO_SPELL)
 {
   spell_type sp = override_spell_type != SPELL_NO_SPELL ? override_spell_type : spell;
   printf(R"(      -
@@ -685,7 +704,7 @@ static void _print_monster_spell(monster& mp, spell_type spell, mon_spell_slot_f
 )",
     spell_title(sp)
   );
-  const auto dmg_str = !override_damage.empty() ? override_damage : mons_human_readable_spell_damage_string(&mp, spell);
+  const auto dmg_str = !override_damage.empty() ? override_damage : _mons_get_damage_string(mi, mon, sp);
   if (!dmg_str.empty()) {
       printf(R"(        Damage: "%s"
 )", dmg_str.c_str());
@@ -696,7 +715,7 @@ static void _print_monster_spell(monster& mp, spell_type spell, mon_spell_slot_f
 );
 }
 
-static void _print_monster_spellsets(monster& mp, const std::set<std::vector<std::pair<spell_type, uint32_t>>>& spell_sets, const std::multimap<spell_type, std::string>& overriden_damages)
+static void _print_monster_spellsets(const monster_info &mi, monster& mon, const std::set<std::vector<std::pair<spell_type, uint32_t>>>& spell_sets, const std::multimap<spell_type, std::string>& overriden_damages)
 {
   if (spell_sets.empty()) {
     return;
@@ -721,7 +740,7 @@ static void _print_monster_spellsets(monster& mp, const std::set<std::vector<std
         {
           for (auto breath : *breaths)
           {
-            _print_monster_spell(mp, sp, flags, "", breath);
+            _print_monster_spell(mi, mon, sp, flags, "", breath);
           }
         }
         continue;
@@ -740,7 +759,7 @@ static void _print_monster_spellsets(monster& mp, const std::set<std::vector<std
           overriden_damage += it->second;
         }
       }
-      _print_monster_spell(mp, sp, flags, overriden_damage);
+      _print_monster_spell(mi, mon, sp, flags, overriden_damage);
     }
   }
 }
@@ -1102,13 +1121,13 @@ static void _print_mon_description_and_quote(const monster_info& mi)
   std::string description, quote;
   _get_monster_description_and_quote(mi, description, quote);
   if (!description.empty()) {
-    _postprocess_txt_str(description);
+    description = _postprocess_txt_str(description);
     printf(R"(  Description: "%s"
 )", description.c_str());
   }
   if (!quote.empty())
   {
-    _postprocess_txt_str(quote);
+    quote = _postprocess_txt_str(quote);
     printf(R"(  Quote: "%s"
 )", quote.c_str());
   }
@@ -1159,13 +1178,13 @@ static std::string _specialize_name(std::string& name, monster_type spec_type)
   return name;
 }
 
-static void _record_spell_damages(monster *mp, std::multimap<spell_type, std::string> &overriden_damages)
+static void _record_spell_damages(const monster_info &mi, monster *mp, std::multimap<spell_type, std::string> &overriden_damages)
 {
   for (int i = 0; i < 100; ++i)
   {
     for (const auto& slot : mp->spells)
     {
-      auto dmg = mons_human_readable_spell_damage_string(mp, slot.spell);
+      auto dmg = _mons_get_damage_string(mi, *mp, slot.spell);
       auto its = overriden_damages.equal_range(slot.spell);
       if (std::find_if(its.first, its.second, 
         [&dmg](const std::pair<const spell_type, std::string>& p) { return dmg == p.second; }) != its.second)
@@ -1223,7 +1242,8 @@ static void _print_data_for_monster(monster_type spec_type)
     // do generation similar to monster util for specific monsters to replicate current behaviour:
     if (spec_type == MONS_ASTERION || spec_type == MONS_CEREBOV || spec_type == MONS_DEMONSPAWN_BLOOD_SAINT)
     {
-      _record_spell_damages(mp, overriden_damages);
+      monster_info mi(mp, MILEV_ALL);
+      _record_spell_damages(mi, mp, overriden_damages);
     }
     // only tiamat still has different spell sets:
     if (spec_type == MONS_TIAMAT)
@@ -1271,7 +1291,8 @@ static void _print_data_for_monster(monster_type spec_type)
 
   string monsterresistances;
   string monstervulnerabilities;
-  monster_info mi(&mon, MILEV_NAME);
+
+  monster_info mi(&mon, MILEV_ALL);
 
   auto colour = mi.colour();
   if (_is_element_colour(colour))
@@ -1310,7 +1331,7 @@ static void _print_data_for_monster(monster_type spec_type)
   _get_habitat_description(me->habitat).c_str()
   );
 
-  _print_monster_spellsets(mon, spell_sets, overriden_damages);
+  _print_monster_spellsets(mi, mon, spell_sets, overriden_damages);
   printf(R"(  Flags: [%s]
   Willpower: "%s"
 )",
@@ -1349,6 +1370,9 @@ static void _print_monsters()
     rng::load_generators(saved_generators); // restore rng to have the same results as monster utility
     const auto spec_type = static_cast<monster_type>(i);
     auto entry = get_monster_data(spec_type);
+    if (mons_is_hepliaklqana_ancestor(spec_type)) {
+      continue;
+    }
     if (entry->bitfields & M_CANT_SPAWN) {
       continue;
     }
@@ -1579,19 +1603,45 @@ static void _print_player_spells()
   }
 }
 
+std::set<spell_type> _generate_monster_spell_set()
+{
+  // Ignore randomized spell sets here, only tiamat has them and they are not unique
+  std::set<spell_type> result;
+  for (int i = 0; i < NUM_MONSTERS; ++i)
+  {
+    const auto spec_type = static_cast<monster_type>(i);
+    auto entry = get_monster_data(spec_type);
+    if (entry->bitfields & M_CANT_SPAWN) {
+      continue;
+    }
+    const auto index = _mi_create_monster(spec_type);
+    if (index == NON_MONSTER)
+    {
+      fprintf(stderr, R"(Unexpected failure generating monster for "%s"\n)", entry->name);
+      exit(1);
+    }
+    auto mon = &env.mons[index];
+    for (auto &spell_slot : mon->spells)
+    {
+      result.insert(spell_slot.spell);
+    }
+    _reset_monster(mon);
+  }
+  return result;
+}
+
 static void _print_monster_spells()
 {
+  auto monster_spell_set = _generate_monster_spell_set();
+
   for (int i = SPELL_NO_SPELL + 1; i < NUM_SPELLS; ++i)
   {
     const spell_type spell = static_cast<spell_type>(i);
-    if (!is_valid_spell(spell) || !(get_spell_flags(spell) & spflag::monster))
+    if (!is_valid_spell(spell) ||
+      is_player_book_spell(spell) ||
+      (monster_spell_set.count(spell) == 0 && !(get_spell_flags(spell) & spflag::monster)))
       continue;
 
-    _print_monster_spell(spell);
-  }
-  // additional spells which do not have spflag::monster:
-  for (auto spell : { SPELL_HURL_DAMNATION })
-  {
     _print_monster_spell(spell);
   }
 }
@@ -1636,6 +1686,7 @@ static void _print_spellbooks()
 int main(int argc, char* argv[])
 {
     crawl_state.test = true;
+    crawl_state.need_save = true;
     if (argc < 2 || argc > 3)
     {
         fprintf(stderr, "Usage: wiki <info type (monsters, spells, spellbooks, monster_spells)> <optional: path to crawl dir>\n");
@@ -1670,7 +1721,7 @@ int main(int argc, char* argv[])
     }
     else
     {
-      fprintf(stderr, "Unsupported info type, currently supported: monsters");
+      fprintf(stderr, "Unsupported info type, currently supported: monsters, spells, monster_spells, spellbooks");
       return 1;
     }
     return 0;
